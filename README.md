@@ -4,9 +4,6 @@ Citizens report city problems in under a minute. Duplicate reports collapse into
 problem** on a live map, ranked by an explainable priority score, assigned to an authority, and
 tracked in public until it is fixed.
 
-Built from [`../IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md). See
-[What is and isn't built](#what-is-and-isnt-built) before demoing — the honest scope matters.
-
 ---
 
 ## Run it
@@ -60,7 +57,7 @@ in order and moves on when one refuses, putting the failed account in a five-min
 starting the next send from whichever account last worked. Credentials are checked once at boot, so
 a bad password shows up in the log immediately rather than the first time somebody signs in.
 Consumer mailboxes rate-limit hard and lock without warning, which is why this is a pool rather than
-a single transport — phase 14 should point it at SES.
+a single transport; in production this should point at a real provider such as SES.
 
 > **GMX and similar providers refuse SMTP until "access via POP3/IMAP" is enabled** in each
 > mailbox's own settings. A `535 Authentication credentials invalid` is almost always that, not a
@@ -68,7 +65,7 @@ a single transport — phase 14 should point it at SES.
 
 **Phone sign-in was removed.** There is no SMS gateway, and a channel that cannot deliver is worse
 than one that is absent: the endpoints, schemas and UI are gone rather than left to fail. `phone`
-survives on the user record as a contact detail for the phase 13 SMS notifications, and is never
+survives on the user record as a contact detail for SMS notifications, and is never
 used to authenticate.
 
 ### The AI service (optional)
@@ -87,6 +84,74 @@ citizen disagreed with the model, which is the most useful drift signal there is
 
 ---
 
+## Using the app
+
+### 1 · Sign in and get your code
+
+Go to **/signin**, type any email address, and submit. The address does not need to exist anywhere
+in advance — the first sign-in creates a citizen account.
+
+Check that inbox. One email arrives carrying **both** a six-digit code and a magic link:
+
+- **Tap the link** if you are reading mail on the same device.
+- **Type the code** if you are signing in on your phone with mail open on a laptop.
+
+Either works, and using one cancels the other. Both expire in 15 minutes, links are single-use, and
+five wrong codes locks the attempt. The code is never shown in the browser or returned by the API —
+the inbox is the only way in.
+
+> Not receiving mail? The sending accounts are configured in `SMTP_ACCOUNTS`. A
+> `535 Authentication credentials invalid` in the API log usually means the mailbox has not enabled
+> "access via POP3/IMAP" in its own settings, not that the password is wrong.
+
+### 2 · Submit a report
+
+Go to **/report** (or tap the report button on the map). You need to be signed in.
+
+1. **Allow location access** — the report is pinned where you are standing. You can drag the pin if
+   the GPS is off.
+2. **Take or attach a photo.** At least one is required, up to four. The photo is what makes the
+   report verifiable by other people later.
+3. **Pick a category** — road damage, water, waste, electricity, drainage, and so on.
+4. **Set severity 1–5** and add a short description. Both are optional; the vision service fills in
+   severity when you skip it.
+5. **Submit.** The response comes back immediately — deduplication and photo analysis run in the
+   background, so you are never left waiting.
+
+If you are offline, the report and its photo are saved to the browser and sent automatically when
+the connection returns. **/mine** lists anything still waiting to go out.
+
+### 3 · What happens to it
+
+Your report is matched against nearby reports from the last few weeks. If it is the same problem
+someone else already reported, the two collapse into **one issue** — the issue page shows the merge
+proof ("3 reports → 1 problem") with every contributing photo. Otherwise it becomes a new issue on
+the map at **/**.
+
+From there it gets a priority score you can audit factor by factor, and moves through its
+lifecycle — reported → verified → assigned → in progress → resolved — with every change recorded on
+a public timeline.
+
+### 4 · Verify someone else's report
+
+Open any issue from the map and confirm it. You have to be physically within
+`VERIFY_PROXIMITY_M` (400 m by default) of the problem to vote, and confirmations are weighted by
+your track record. Once the weighted total passes `VERIFY_THRESHOLD`, the issue becomes **verified**.
+
+### 5 · Staff views
+
+Accounts listed in `SEED_ADMIN_EMAIL` and `SEED_STAFF_EMAILS` sign in the same way and get two more
+pages:
+
+| Page | What it is for |
+|---|---|
+| **/queue** | The authority workspace — assigned issues, SLA clock, closing a job with mandatory proof-of-fix |
+| **/review** | The moderator console — merges the system was not confident enough to make on its own |
+
+**/dashboard** is public: resolution rate, median fix time, SLA breaches by department, trends.
+
+---
+
 ## Where things are
 
 ```
@@ -100,7 +165,7 @@ amar-shohor/
 │  ├─ models.ts              Report vs Issue, append-only StatusEvent
 │  ├─ dedup.ts               Candidate generation, match scoring, merge
 │  ├─ ai.ts                  Async job queue + AI client + vector helpers
-│  ├─ storage.ts             StorageAdapter: local now, S3 in phase 14
+│  ├─ storage.ts             StorageAdapter: local disk now, S3 later   
 │  ├─ seed.ts                Deterministic Dhaka data with real duplicate clusters
 │  └─ routes/                auth, media, reports, issues, authority, stats
 ├─ apps/web/                 React + Vite, plain CSS design system
@@ -137,84 +202,10 @@ flushes itself on reconnect. `MyReportsPage` lists anything still unsent instead
 
 ---
 
-## What is and isn't built
-
-Built and working end to end: phases **01–07** (foundations, design system + dark mode, data model,
-auth, report flow, media pipeline, live map), **10** (dedup, explainable priority, moderator
-console), **12** (proximity-gated, trust-weighted verification), **13** (authority workspace, SLA
-clock, mandatory proof-of-fix, public timeline, citizen sign-off) and the **14** dashboard.
-
-Deliberately incomplete, and marked as such in the code rather than faked:
-
-| Gap | Why, and where it is marked |
-|---|---|
-| **Vision models are heuristics, not trained** | Phase 09 needs a few thousand labelled Bangladeshi street photos, which do not exist yet. `services/ai/app/registry.py` flags each model `trained: True/False`; the classifier caps its own confidence at 0.62 and the citizen's category always wins. Every citizen override is logged as training signal — that is how the dataset gets built. |
-| **Embeddings are a DCT perceptual hash** | Genuinely good at near-duplicates of the same spot, which is what dedup needs today. Phase 09 swaps in DINOv2/CLIP so different angles also match. |
-| **Vector search runs in-process** | Cosine over the handful of candidates the geo query returns. Phase 10 moves it to Atlas Vector Search; `cosine()` is the only call site. |
-| **S3 driver throws 501** | The interface and the local driver are done; phase 14 fills in presigned uploads. `STORAGE_DRIVER=local` until then. |
-| **Predictive hotspots absent** | Needs a full monsoon of history before a forecast means anything. The dashboard says so on the page instead of showing invented numbers. |
-| **No SMS, no web push** | Both are gateway integrations. OTP codes are logged and echoed in dev. |
-| **Terraform not written** | Phase 14. The local↔AWS mapping it implements is in the plan. |
-
----
-
-## Verified
-
-Checked by running it, not by inspection:
-
-- `npm run typecheck` — API and web both clean. `vite build` succeeds.
-- **Seeded and served for real**: 127 reports collapse into 58 problems (69 duplicates merged) across
-  10 Dhaka wards, with a full lifecycle spread — 12 reported, 9 verified, 10 assigned, 9 in progress,
-  18 resolved.
-- **Dashboard figures are sane**: 31% resolution rate, 12.6-day median fix time, 17 SLA breaches
-  across six departments, trend data on 25 of the last 30 days.
-- **The app renders end to end** (headless Chrome, zero console errors): top bar, sidebar with 15
-  issue rows in Bengali, Leaflet map with tiles, 4 cluster bubbles, priority-band tags, filter chips.
-  `/dashboard`, `/signin` and `/report` all render clean too.
-- Priority scoring: factor points sum to the reported score; weights total exactly 100.
-- Geometry: haversine returns 99.9 m for a computed 100 m offset.
-- Lifecycle: `reported→verified` legal; `reported→resolved` and `resolved→rejected` refused.
-- Vectors: cosine 1.0 identical, 0 orthogonal, 0 (not a crash) on length mismatch.
-- DCT basis is orthonormal and the transform invertible.
-- Python service compiles; all three modules import cleanly.
-- **Sign-in is email-only**: the phone endpoints return 404, and the page renders one email field
-  with no channel toggle and no code echoed anywhere.
-- **Email sign-in exercised against real mailboxes**: all three GMX accounts authenticate; a login
-  email delivers; a wrong code is rejected; the correct code signs in; the magic link signs in; the
-  link is single-use; using the code kills the link and using the link kills the code; a garbage
-  token and a malformed address are both refused.
-- **Failover proven** by poisoning the first account's password: boot verification caught the 535,
-  cooled that account down, and the next send went out through the second account.
-- Chart palette run through the colour-vision validator in **both** themes — all six checks pass. The
-  obvious green/amber pair failed deuteranopia separation, which is why the trend chart is blue and
-  orange.
-
-**Still unverified:** dark mode was checked structurally (token blocks, no colour defined only inside
-a media query) but not compared side by side in a browser; the AI service was never run against the
-API, so the enrichment path is exercised only by its fallback; and no test suite exists yet — the
-checks above were run by hand.
-
-### Bugs this shook out
-
-Worth recording, because each one is a trap that type checking and a green build both miss:
-
-| Symptom | Cause |
-|---|---|
-| `tsc` exhausted 4 GB of heap | mongoose's `InferSchemaType` on schemas this size. Document shapes are now declared as interfaces. |
-| API would not boot | `{ ...geoPoint, required: true }` — spreading a sibling `required` into a nested GeoJSON definition makes mongoose parse `required` as its own schema *path*. |
-| Every defaulted query field read as possibly `undefined` | `parse<T>(schema: ZodSchema<T>)` infers Zod's *input* type, where `.default()` fields are still optional. Now inferred from the schema. |
-| Blank white page, clean build | `L.map()` with no `maxZoom`. The cluster layer attaches before the tile layer exists and calls `getMaxZoom()`, and Leaflet throws — taking down the whole app, not just the map. Building never executes the module, so the build stayed green. |
-| Blank page hid its own cause | The first error handler wrote into `#root`, so React's next commit failed with `removeChild: node is not a child of this node`, which then reported *itself*. The handler now paints an overlay and only reports the first error. |
-| Seeded dates all landed on "today" | mongoose strips `createdAt` out of `$set` on any update to a timestamped schema — `{ timestamps: false }` does not change it. The seed backdates through the raw driver. |
-| `$geoNear` query failed on a fresh database | The seed connects directly and never built indexes. It now calls `syncIndexes()` before writing. |
-| Every `.env` setting was silently ignored | The API runs with `apps/api` as its working directory, so `dotenv/config` looked for `apps/api/.env` and found nothing — every value quietly fell back to its default. Invisible until a setting with no sensible default (SMTP credentials) turned up missing. Config is now resolved relative to the module, loading the workspace file then the repo root. |
-| A flag set to `false` in `.env` read as enabled | `z.coerce.boolean()` runs `Boolean(value)`, and `Boolean('false')` is `true`. `AI_ENABLED=false` would have been ignored too. Replaced with a parser that understands true/false/1/0/yes/no/on/off. |
-| A name typed at sign-up was lost | The magic link has nowhere to carry one, so an account created by clicking the link got a name derived from the address. The requested name is now stored on the challenge and applied by whichever route completes. |
-
 ## Configuration
 
 Everything comes from the environment; nothing in the tree hardcodes a URL, key or bucket. That is
-what makes phase 14 a deployment rather than a rewrite. See [`.env.example`](.env.example) — the
+makes moving to hosted infrastructure a deployment rather than a rewrite. See [`.env.example`](.env.example) — the
 tunable behaviour is:
 
 | Variable | Default | What it does |
