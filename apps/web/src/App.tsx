@@ -12,6 +12,7 @@ import { DashboardPage } from './pages/DashboardPage';
 import { QueuePage } from './pages/QueuePage';
 import { ReviewPage } from './pages/ReviewPage';
 import { SignInPage } from './pages/SignInPage';
+import { HistoryPage, ReportHistoryPage } from './pages/HistoryPage';
 import { MagicLinkPage } from './pages/MagicLinkPage';
 
 export function App() {
@@ -23,6 +24,8 @@ export function App() {
         <Route path="/report" element={<ReportPage />} />
         <Route path="/mine" element={<RequireUser><MyReportsPage /></RequireUser>} />
         <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/history" element={<RequireUser><HistoryPage /></RequireUser>} />
+        <Route path="/history/:id" element={<RequireUser><ReportHistoryPage /></RequireUser>} />
         <Route path="/queue" element={<RequireStaff><QueuePage /></RequireStaff>} />
         <Route path="/review" element={<RequireStaff><ReviewPage /></RequireStaff>} />
         <Route path="/signin" element={<SignInPage />} />
